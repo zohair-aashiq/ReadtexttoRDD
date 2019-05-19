@@ -74,9 +74,15 @@ object ReadFiles {
         var initialDF = spark.createDataFrame(spark.sparkContext.emptyRDD[Row], schema)
         val y = Window.orderBy("RECORD_NO")
         val dfWithId = dataFrame.withColumn("index", row_number().over(y))
+        var minDf = Integer.parseInt(dfWithId.agg(min("RECORD_NO")).first().getString(0))
+        val maxDf = Integer.parseInt(dfWithId.agg(max("RECORD_NO")).first().getString(0))
+        println(minDf)
+        println(maxDf)
+        minDf = 1000000
         val numOfPartition = (dfWithId.count / rangeNum).asInstanceOf[Int]
-        var minRange = 1
-        var maxRange = rangeNum
+        var minRange = minDf
+        var maxRange = minRange + 10000
+        println(dfWithId.show(100))
         for(x <-(1 to numOfPartition)) {
             val df = dfWithId.where(col("index").between(minRange, maxRange))
             val dfCount = df.count()
