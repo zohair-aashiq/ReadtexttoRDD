@@ -1,13 +1,12 @@
-import org.apache.spark.SparkContext
-import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.Dataset
 import org.apache.spark.sql._
+import scala.util.control.Breaks._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import java.util.stream.IntStream
+import org.apache.log4j.Logger
+import org.apache.log4j.Level
 
-import scala.annotation.tailrec
 import scala.collection.mutable
 object ReadFiles {
     def main(args: Array[String]): Unit = {
@@ -28,7 +27,7 @@ object ReadFiles {
           .limit(100)
         //initialize DF
         val dfRanges = makeRangeColumn(sample_file,10,spark)
-//        dfRanges.write.partitionBy("Range").parquet("src/main/resources/Output/IDENT_HEADER_parq.parquet")
+        dfRanges.write.partitionBy("Ranges").parquet("src/main/resources/Output/IDENT_HEADER_parq.parquet")
         /*
         //val SUB_HEADER = spark.read.format("csv")
         //.option("header", "true")
@@ -66,50 +65,43 @@ object ReadFiles {
 */
 
     }
-    def makeRangeColumn(dataFrame: DataFrame, rangeNum:Int, spark:SparkSession): DataFrame ={
+    def makeRangeColumn(dataFrame: DataFrame, rangeNum:Int, spark:SparkSession): DataFrame = {
         import spark.sqlContext.implicits._
-        val schema = StructType(
-            StructField("Range", StringType, true) :: Nil)
-        val metaHashMap: mutable.HashMap[String,String] = mutable.HashMap.empty[String,String]
-        var initialDF = spark.createDataFrame(spark.sparkContext.emptyRDD[Row], schema)
-        val y = Window.orderBy("RECORD_NO")
-        val dfWithId = dataFrame.withColumn("index", row_number().over(y))
-        var minDf = Integer.parseInt(dfWithId.agg(min("RECORD_NO")).first().getString(0))
-        val maxDf = Integer.parseInt(dfWithId.agg(max("RECORD_NO")).first().getString(0))
+        var cols = dataFrame.columns
+        var dfWithFoo = cols.foldLeft(spark.emptyDataFrame)((a, b) => a.withColumn(b, lit("anyStringValue")))
+        var initialDF = dfWithFoo.withColumn("Ranges", lit(null: String))
+        val min_max = dataFrame.agg(min("RECORD_NO"), max("RECORD_NO")).head()
+        var minDf = Integer.parseInt(min_max.getString(0))
+        val maxDf = Integer.parseInt(min_max.getString(1))
         println(minDf)
         println(maxDf)
-        minDf = 1000000
-        val numOfPartition = (dfWithId.count / rangeNum).asInstanceOf[Int]
+        minDf = 1
+        val numOfPartition = (maxDf / rangeNum) + 1
+        print("numOfpartition"+numOfPartition)
         var minRange = minDf
-        var maxRange = minRange + 10000
-        println(dfWithId.show(100))
-        for(x <-(1 to numOfPartition)) {
-            val df = dfWithId.where(col("index").between(minRange, maxRange))
-            val dfCount = df.count()
-            val minimum = Integer.parseInt(df.agg(min("RECORD_NO")).first().getString(0))
-            val maximum = Integer.parseInt(df.agg(max("RECORD_NO")).first().getString(0))
-            val value:String = minimum + "-" + maximum
-            val dfRange = Seq(value).toDF("Range")
-            val array = IntStream.range(minRange, maxRange+1).toArray
-            val result = dfRange.withColumn("Dummy", explode(lit(array))).drop("Dummy")
-            initialDF = initialDF.union((result)).toDF()
-            minRange = maxRange + 1
-            maxRange = maxRange + 10
-            metaHashMap.getOrElseUpdate(minimum.toString, value)
-
+        var maxRange = minRange + 9
+        println("minRange" + minRange)
+        println("maxRange" + maxRange)
+        for (x <- (1 to numOfPartition)) {
+          val df = dataFrame.where(col("RECORD_NO").between(minRange, maxRange))
+          val dfCount = df.count()
+          val value: String = minRange + "-" + maxRange
+          println("value" + value)
+          //var dfRange = spark.createDataFrame(spark.sparkContext.emptyRDD[Row], schema)
+          //val dfRange = Seq(value).toDF("Range")
+          val dfRange = Seq(value).toDF("Ranges")
+          val arrayRange = IntStream.range(1, dfCount.toInt + 1).toArray
+          var result = dfRange.withColumn("Dummy", explode(lit(arrayRange))).drop("Dummy")
+          val v = Window.orderBy("Ranges")
+          val x = Window.orderBy("RECORD_NO")
+          val resultIndices = result.withColumn("index", row_number().over(v))
+          val dataWithIndices = df.withColumn("index", row_number().over(x))
+          val finalDf = dataWithIndices.join(resultIndices, Seq("index"), "outer").drop("index")
+          initialDF = initialDF.union((finalDf)).toDF()
+          minRange = maxRange + 1
+          maxRange = maxRange + 10
         }
-        println("This is a meta Hashmap"+metaHashMap.foreach(println))
-        val metaDf = metaHashMap.toSeq.toDF("MinimumValue", "Range")
-        metaDf
-          .coalesce(1)
-          .write.format("com.databricks.spark.csv")
-          .option("header", "true")
-          .save("src/main/resources/Output/parquetFiles_metaTable.csv")
-        val w = Window.orderBy("Range")
-        val resultDf = initialDF.withColumn("index", row_number().over(w))
-        val finalDf = dfWithId.join(resultDf, Seq("index"),"outer")
-
-        finalDf
+        initialDF
     }
 }
 
